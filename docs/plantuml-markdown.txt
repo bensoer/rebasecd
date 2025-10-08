@@ -1,0 +1,140 @@
+@startuml
+
+dataclass HelmChartCredentialsDTO {
+  +String username
+  +String password
+  +String secretName
+  +String usernameKey
+  +String passwordKey
+}
+
+dataclass ApplicationCRD {
+  +String url
+  +String version
+  +ArrayList<String> valuesFiles
+  +HelmChartCredentialsDTO helmChartCredentials
+}
+
+
+abstract class HelmChartCredential {
+  HelmChartCredentialsDTO credentials
+
+  <<constructor>>
+  Credential(HelmChartCredentialsDTO credentials)
+
+  +String {abstract} getUsername()
+  +String {abstract} getPassword()
+  +Boolean {abstract} isType()
+  +Boolean hasCredentials()
+}
+
+class ExpliciteHelmChartCredential extends HelmChartCredential {
+  
+  <<constructor>>
+  ExpliciteCredential(HelmChartCredentialsDTO credentials)
+
+  +String getUsername()
+  +String getPassword()
+  +Boolean isType()
+}
+
+class SecretHelmChartCredential extends HelmChartCredential {
+
+  <<constructor>>
+  SecretCredential(HelmChartCredentialsDTO credentials)
+
+  +String getUsername()
+  +String getPassword()
+  +Boolean isType()
+}
+
+class NoHelmChartCredential extends HelmChartCredential {
+
+  <<constructor>>
+  NoCredential(HelmChartCredentialsDTO credentials)
+
+  +String getUsername()
+  +String getPassword()
+  +Boolean isType()
+}
+
+class HelmChartCredentialResolver {
+  <<constructor>>
+  CredentialResolver()
+  
+  +void registerCredential(HelmChartCredential credential)
+  +Credential getCredential(HelmChartCredentialsDTO credentials)
+}
+
+abstract class HelmChart {
+    String url
+    String version
+    ArrayList<String> valuesFiles
+    HelmChartCredential credentials
+
+    <<constructor>>
+    +HelmChart(String url, String version, ArrayList<String> valuesFiles, 
+        HelmChartCredential credentials)
+
+    +void {abstract} getChart()
+    +void {abstract} isType() Boolean
+    +void renderChart()
+    +void deployChart()
+}
+
+class OCIHelmChart extends HelmChart {
+  <<constructor>>
+  +OCIHelmChart(String url, String version, ArrayList<String> valuesFiles, 
+        HelmChartCredential credentials)
+  +void getChart()
+}
+
+class GitHelmChart extends HelmChart {
+  <<constructor>>
+  +GitHelmChart(String url, String version, ArrayList<String> valuesFiles, 
+        HelmChartCredential credentials)
+  +void getChart()
+}
+
+
+class HelmChartResolver {
+  - ArrayList<HelmChart> helmCharts
+
+  +void registerHelmChart(HelmChart chart)
+  +void getHelmChart(ApplicationCRD app): HelmChart
+}
+
+
+class Application {
+  HelmChart chart
+
+  <<constructor>>
+  Application(HelmChart chart)
+
+  +void createApplicationResources()
+  
+
+}
+
+class MainLoop {
+  +void run()
+}
+
+
+ApplicationCRD <-- HelmChartResolver: "Resolves Helm Chart Client From ApplicationCRD"
+ApplicationCRD o-- HelmChartCredentialsDTO
+
+HelmChart --> HelmChartCredential: "Authenticates Helm Chart With"
+Application --> HelmChart: "Provisions Helm Chart Resources With"
+
+HelmChartCredentialResolver --> HelmChartCredential: "Creates Instance Of"
+HelmChartResolver --> HelmChart: "Creates Instance Of"
+
+MainLoop --> HelmChartCredentialResolver: "Gets HelmChartCredentials With"
+MainLoop --> HelmChartResolver: "Gets HelmChart With"
+MainLoop --> Application: "Deploys Helm Chart Resources With"
+
+
+
+
+@enduml
