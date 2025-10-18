@@ -8,4 +8,14 @@ layout:
 - go.kubebuilder.io/v4
 projectName: rebasecd-operator
 repo: github.com/bensoer/rebasecd
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: rebasecd.projectterris.com
+  group: operator
+  kind: Application
+  path: github.com/bensoer/rebasecd/api/v1alpha1
+  version: v1alpha1
 version: "3"

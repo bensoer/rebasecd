@@ -1,0 +1,12 @@
+apiVersion: operator.rebasecd.projectterris.com/v1alpha1
+kind: Application
+metadata:
+  labels:
+    app.kubernetes.io/name: rebasecd-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: application-sample
+spec:
+  url: 
+  version: 0.0.1
+  valuesFiles:
+    - values.yaml
