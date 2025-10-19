@@ -56,10 +56,29 @@ type HelmChartCredentialsSpec struct {
 // ApplicationSpec defines the desired state of Application.
 type ApplicationSpec struct {
 
+	// How often (in minutes) to poll the Helm Chart repository for changes
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default:=3
+	// +kubebuilder:validation:Minimum=1
+	PollIntervalMinutes int32 `json:"pollIntervalMinutes,omitempty"`
+
 	// The URL where the Helm Chart is located
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Required
 	Url string `json:"url,omitempty"`
+
+	// Name of the Helm Chart. Only used if URL is pointing to a Helm Chart Repository
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:example:string:"my-service-chart"
+	ChartName string `json:"chartName,omitempty"`
+
+	// For git Helm charts, the path within the repository where the chart is located
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:example:string:"/chart"
+	// +kubebuilder:default:"/chart"
+	Path string `json:"path,omitempty"`
 
 	// The Helm Chart Version
 	// +kubebuilder:validation:Type=string
@@ -69,6 +88,19 @@ type ApplicationSpec struct {
 	// The Values Files within the Helm Chart to use with this Application
 	// +kubebuilder:validation:Required
 	ValuesFiles []string `json:"valuesFiles,omitempty"`
+
+	// Release name for the Helm Chart Deployment
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Required
+	// +kubebuilder:example:string:"my-service-release"
+	ReleaseName string `json:"releaseName,omitempty"`
+
+	// The namespace where the Helm Chart will be deployed to. Defaults to the "default" namespace
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default:"default"
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:example:string:"serviceA"
+	TargetNamespace string `json:"targetNamespace,omitempty"`
 
 	// The Credentials for authenticating with the Helm Chart Repository
 	// +optional

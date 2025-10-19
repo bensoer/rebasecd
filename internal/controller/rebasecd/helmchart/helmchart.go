@@ -1,19 +1,21 @@
 package helmchart
 
 import (
+	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 
 	rebasecd "github.com/bensoer/rebasecd/internal/controller/rebasecd"
 	"github.com/bensoer/rebasecd/internal/controller/utils"
 	"helm.sh/helm/v3/pkg/action"
-	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/cli"
 	"helm.sh/helm/v3/pkg/cli/values"
 	"helm.sh/helm/v3/pkg/getter"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type HelmChart struct {
@@ -21,6 +23,7 @@ type HelmChart struct {
 	ValuesFiles []string
 	ReleaseName string
 	Namespace   string
+	Credentials rebasecd.CredentialsHandler
 
 	// Params for getting a chart from a Helm Repository
 	repoUrl   string
@@ -28,9 +31,7 @@ type HelmChart struct {
 	chartName string
 
 	// Rendered state information about the chart
-	renderedChart  *chart.Chart
-	renderedValues map[string]interface{}
-	tmpDir         string
+	tmpDir string
 
 	// Configuration on how to find the chart and where its going
 	Settings     *cli.EnvSettings
@@ -38,17 +39,26 @@ type HelmChart struct {
 	ChartPath    string
 }
 
-func NewHelmChart(repoURL, chartName, version, releaseName, namespace string, valuesFiles []string) rebasecd.ChartHandler {
+func NewHelmChart(repoURL, chartName, version, releaseName, namespace string, credentials rebasecd.CredentialsHandler, valuesFiles []string) rebasecd.ChartHandler {
 	return &HelmChart{
 		ReleaseName: releaseName,
 		ValuesFiles: valuesFiles,
 		Namespace:   namespace,
+		Credentials: credentials,
 
 		repoUrl:   repoURL,
 		version:   version,
 		chartName: chartName,
 	}
 
+}
+
+func (h *HelmChart) ChartName() string {
+	return h.chartName
+}
+
+func (h *HelmChart) ChartVersion() string {
+	return h.version
 }
 
 func (h *HelmChart) GetChart() error {
@@ -61,6 +71,15 @@ func (h *HelmChart) GetChart() error {
 	chartPathOpts := action.ChartPathOptions{
 		RepoURL: h.repoUrl,
 		Version: h.version,
+	}
+
+	if h.Credentials.HasCredentials() {
+		// Set up authentication for Helm repository access
+		username := h.Credentials.GetUsername()
+		password := h.Credentials.GetPassword()
+
+		chartPathOpts.Username = username
+		chartPathOpts.Password = password
 	}
 
 	chartPath, err := chartPathOpts.LocateChart(h.chartName, settings)
@@ -76,24 +95,24 @@ func (h *HelmChart) GetChart() error {
 	return nil
 }
 
-func (h *HelmChart) RenderChart() error {
+func (h *HelmChart) RenderChartObjects() ([]client.Object, error) {
 
 	// Copy chart to a unique temp directory for this reconcile
 	tmpDir, err := os.MkdirTemp("", "helm-chart-*")
 	if err != nil {
-		return fmt.Errorf("failed to create temp dir: %w", err)
+		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
 	h.tmpDir = tmpDir
 
 	copiedChartPath := filepath.Join(tmpDir, filepath.Base(h.ChartPath))
-	if err := h.copyFile(h.ChartPath, copiedChartPath); err != nil {
-		return fmt.Errorf("failed to copy chart to temp dir: %w", err)
+	if err := utils.CopyFile(h.ChartPath, copiedChartPath); err != nil {
+		return nil, fmt.Errorf("failed to copy chart to temp dir: %w", err)
 	}
 
 	// Load the chart from the temp directory
 	chart, err := loader.Load(copiedChartPath)
 	if err != nil {
-		return fmt.Errorf("failed to load chart: %w", err)
+		return nil, fmt.Errorf("failed to load chart: %w", err)
 	}
 
 	// Merge multiple value files (relative to temp chart dir)
@@ -104,59 +123,60 @@ func (h *HelmChart) RenderChart() error {
 
 	baseVals, err := valueOpts.MergeValues(getter.All(h.Settings))
 	if err != nil {
-		return fmt.Errorf("failed to merge values: %w", err)
+		return nil, fmt.Errorf("failed to merge values: %w", err)
 	}
 
-	h.renderedChart = chart
-	h.renderedValues = baseVals
+	// Now dryrun so that we can grab out all of the resources in this helm chart
 
-	return nil
+	dryUpgrade := action.NewUpgrade(h.ActionConfig)
+	dryUpgrade.Namespace = h.Namespace
+	dryUpgrade.Install = true
+	dryUpgrade.Atomic = true
+	dryUpgrade.Wait = true
+	dryUpgrade.DryRun = true
 
-}
-
-func (h *HelmChart) DeployChart() error {
-
-	// 7. Install or upgrade the release
-	upg := action.NewUpgrade(h.ActionConfig)
-	upg.Namespace = h.Namespace
-	upg.Install = true
-	upg.Atomic = true
-	upg.Wait = true
-
-	release, err := upg.Run(h.ReleaseName, h.renderedChart, h.renderedValues)
+	release, err := dryUpgrade.Run(h.ReleaseName, chart, baseVals)
 	if err != nil {
-		return fmt.Errorf("failed to install/upgrade chart: %w", err)
+		return nil, fmt.Errorf("failed to install/upgrade chart: %w", err)
 	}
 
-	fmt.Printf("Deployed Chart %q:%q in Namespace %q under Release Name %q\n", release.Chart.Metadata.Name, release.Chart.Metadata.Version, release.Namespace, release.Name)
+	objs, err := utils.DecodeYAMLManifest(release.Manifest)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode YAML manifest: %w", err)
+	}
+
+	return objs, nil
+
+}
+
+func (h *HelmChart) DeployChartObjects(objects []client.Object, ctx context.Context, k8sClient client.Client) error {
+
+	for _, obj := range objects {
+
+		// Create or update
+		key := client.ObjectKeyFromObject(obj)
+		existing := &unstructured.Unstructured{}
+		existing.SetGroupVersionKind(obj.GetObjectKind().GroupVersionKind())
+
+		if err := k8sClient.Get(ctx, key, existing); err != nil {
+			if apierrors.IsNotFound(err) {
+				_ = k8sClient.Create(ctx, obj)
+			} else {
+				return err
+			}
+		} else {
+			if !utils.UnstructuredObjectsAreEqual(existing, obj) {
+				obj.SetResourceVersion(existing.GetResourceVersion())
+				_ = k8sClient.Update(ctx, obj)
+			}
+		}
+	}
+
+	//fmt.Printf("Deployed Chart %q:%q in Namespace %q under Release Name %q\n", release.Chart.Metadata.Name, release.Chart.Metadata.Version, release.Namespace, release.Name)
 
 	return nil
 }
 
-func (h *HelmChart) Cleanup() error {
+func (h *HelmChart) Cleanup() {
 	os.RemoveAll(h.tmpDir)
-	h.renderedChart = nil
-	h.renderedValues = nil
-
-	return nil
-}
-
-func (h *HelmChart) copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-
-	return out.Sync()
 }

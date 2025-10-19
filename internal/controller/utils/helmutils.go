@@ -2,35 +2,12 @@ package utils
 
 import (
 	"fmt"
-	"sync"
+	"io"
+	"os"
 
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/cli"
 )
-
-// chartLocks holds a map of mutexes for each chart+version
-var chartLocks = make(map[string]*sync.Mutex)
-var chartLocksMu sync.Mutex // protects the map itself
-
-// GetMutexForChart returns a mutex for the given chart+version combination.
-// It creates a new mutex if one does not already exist.
-func GetMutexForChart(chartName, version string) *sync.Mutex {
-	key := fmt.Sprintf("%s:%s", chartName, version)
-
-	// Lock the map itself
-	chartLocksMu.Lock()
-	defer chartLocksMu.Unlock()
-
-	// If a mutex already exists for this chart/version, return it
-	if m, exists := chartLocks[key]; exists {
-		return m
-	}
-
-	// Otherwise, create a new mutex and store it
-	m := &sync.Mutex{}
-	chartLocks[key] = m
-	return m
-}
 
 func NewActionConfigAndSettings(namespace string) (*action.Configuration, *cli.EnvSettings, error) {
 	settings := cli.New()
@@ -44,4 +21,24 @@ func NewActionConfigAndSettings(namespace string) (*action.Configuration, *cli.E
 	}
 
 	return actionConfig, settings, nil
+}
+
+func CopyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+
+	return out.Sync()
 }

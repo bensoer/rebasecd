@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -25,10 +26,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	operatorv1alpha1 "github.com/bensoer/rebasecd/api/v1alpha1"
 	"github.com/bensoer/rebasecd/internal/controller/lib"
+	"github.com/bensoer/rebasecd/internal/controller/rebasecd/helmchart"
+	"github.com/bensoer/rebasecd/internal/controller/utils"
 )
 
 const (
@@ -95,15 +100,94 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
-	// This means it has a status, so lets start building the things
+	// Resolve the chart handler
+	chartHandler, err := helmchart.CreateChartHandlerFromSpec(&application.Spec, req.NamespacedName.Namespace, r.Client)
+	if err != nil {
+		log.Error(err, "Failed to create chart handler from spec")
+		return ctrl.Result{}, err
+	}
 
-	return ctrl.Result{}, nil
+	// Check if the chart already exists in the environment
+	// IF found, then assume we are doing an update
+	// IF not found, deploy a new one
+	// -- Don't think this distinction matters since we just redeploy everything in both an update or new creation. DeployChartObjects() has a check to not deploy something that is identical
+
+	// This mutex ensures that only one reconciliation for a specific chart+version happens at a time
+	mutex := utils.GetMutexForChart(chartHandler.ChartName(), chartHandler.ChartVersion())
+	mutex.Lock()
+
+	// defers run LIFO, so we need to release the mutex before unlocking it
+	defer utils.ReleaseMutexForChart(chartHandler.ChartName(), chartHandler.ChartVersion())
+	defer mutex.Unlock()
+
+	// Get the chart wherever its located with whatever credentials are provided
+	if err := chartHandler.GetChart(); err != nil {
+		log.Error(err, "Failed to get chart")
+		chartHandler.Cleanup()
+		err := asm.SetApplicationStatus(ctx, metav1.ConditionFalse, "ChartFetchFailed", err.Error())
+		if err != nil {
+			log.Error(err, "Failed to Update Application Status")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Render out the helm chart objects
+	objs, err := chartHandler.RenderChartObjects()
+	if err != nil {
+		log.Error(err, "Failed to render chart")
+		chartHandler.Cleanup()
+		err := asm.SetApplicationStatus(ctx, metav1.ConditionFalse, "ChartRenderFailed", err.Error())
+		if err != nil {
+			log.Error(err, "Failed to Update Application Status")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Map ownership of these objects
+	for _, obj := range objs {
+		// Add ownership to CR
+		if err := ctrl.SetControllerReference(application, obj, r.Scheme); err != nil {
+			log.Error(err, "Failed to set controller reference")
+			return ctrl.Result{}, err
+		}
+	}
+
+	if err := chartHandler.DeployChartObjects(objs, ctx, r.Client); err != nil {
+		log.Error(err, "Failed to deploy chart")
+		chartHandler.Cleanup()
+		err := asm.SetApplicationStatus(ctx, metav1.ConditionFalse, "ChartDeployFailed", err.Error())
+		if err != nil {
+			log.Error(err, "Failed to Update Application Status")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Cleanup temporary files
+	chartHandler.Cleanup()
+
+	// Update status to available
+	err = asm.SetApplicationStatus(ctx, metav1.ConditionTrue, "Reconciled", "Application successfully reconciled")
+	if err != nil {
+		log.Error(err, "Failed to Update Application Status")
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{RequeueAfter: time.Duration(application.Spec.PollIntervalMinutes) * time.Minute}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&operatorv1alpha1.Application{}).
-		Named("application").
+		Owns(&appsv1.Deployment{}).
+		Owns(&appsv1.StatefulSet{}).
+		Owns(&appsv1.DaemonSet{}).
+		Owns(&appsv1.ReplicaSet{}).
+		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.Secret{}).
 		Complete(r)
 }

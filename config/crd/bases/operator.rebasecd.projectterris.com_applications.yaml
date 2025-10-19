@@ -39,6 +39,10 @@ spec:
           spec:
             description: ApplicationSpec defines the desired state of Application.
             properties:
+              chartName:
+                description: Name of the Helm Chart. Only used if URL is pointing
+                  to a Helm Chart Repository
+                type: string
               helmChartCredentials:
                 description: The Credentials for authenticating with the Helm Chart
                   Repository
@@ -64,6 +68,24 @@ spec:
                       for authenticating with the Helm Chart Repository
                     type: string
                 type: object
+              path:
+                description: For git Helm charts, the path within the repository where
+                  the chart is located
+                type: string
+              pollIntervalMinutes:
+                default: 3
+                description: How often (in minutes) to poll the Helm Chart repository
+                  for changes
+                format: int32
+                minimum: 1
+                type: integer
+              releaseName:
+                description: Release name for the Helm Chart Deployment
+                type: string
+              targetNamespace:
+                description: The namespace where the Helm Chart will be deployed to.
+                  Defaults to the "default" namespace
+                type: string
               url:
                 description: The URL where the Helm Chart is located
                 type: string
@@ -77,6 +99,7 @@ spec:
                 description: The Helm Chart Version
                 type: string
             required:
+            - releaseName
             - url
             - valuesFiles
             - version

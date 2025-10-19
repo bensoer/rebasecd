@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 
 	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing/transport/http"
 )
 
 type GitHelmChart struct {
@@ -26,7 +27,7 @@ type GitHelmChart struct {
 	*HelmChart
 }
 
-func NewGitHelmChart(gitRepositoryUrl, chartRootPath, releaseName, namespace string, valuesFiles []string) rebasecd.ChartHandler {
+func NewGitHelmChart(gitRepositoryUrl, chartRootPath, releaseName, namespace string, credentials rebasecd.CredentialsHandler, valuesFiles []string) rebasecd.ChartHandler {
 	return &GitHelmChart{
 		chartRootPath:    chartRootPath,
 		gitRepositoryUrl: gitRepositoryUrl,
@@ -34,8 +35,17 @@ func NewGitHelmChart(gitRepositoryUrl, chartRootPath, releaseName, namespace str
 			ReleaseName: releaseName,
 			ValuesFiles: valuesFiles,
 			Namespace:   namespace,
+			Credentials: credentials,
 		},
 	}
+}
+
+func (ghc *GitHelmChart) ChartName() string {
+	return ghc.repoNameFromURL(ghc.gitRepositoryUrl)
+}
+
+func (ghc *GitHelmChart) ChartVersion() string {
+	return "latest"
 }
 
 /**
@@ -88,11 +98,24 @@ func (ghc *GitHelmChart) cloneRepoToTemp(repoURL string) (string, error) {
 		return "", fmt.Errorf("failed to create temp dir: %w", err)
 	}
 
+	var auth *http.BasicAuth = nil
+	if ghc.Credentials.HasCredentials() {
+		// Set up authentication for Git repository access
+		username := ghc.Credentials.GetUsername()
+		password := ghc.Credentials.GetPassword()
+
+		auth = &http.BasicAuth{
+			Username: username,
+			Password: password,
+		}
+	}
+
 	// Clone the repository into that directory
 	fmt.Printf("Cloning %s into %s...\n", repoURL, tempDir)
 	_, err = git.PlainClone(tempDir, false, &git.CloneOptions{
 		URL:      repoURL,
 		Progress: os.Stdout,
+		Auth:     auth,
 	})
 	if err != nil {
 		os.RemoveAll(tempDir) // cleanup on failure
